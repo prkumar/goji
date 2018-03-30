@@ -1,70 +1,68 @@
-import json
-
-import requests
 from requests.compat import urljoin
 
-from goji.models import User, Issue, Transition
+from goji.models import Model, User, Issue, Transition
 from goji.auth import get_credentials
 
+from uplink import (
+    Field, loads, returns, json, Consumer, get, post, put, response_handler
+)
 
-class JIRAClient(object):
+loads.from_json(Model).using(lambda model, j: model.from_json(j))
+
+
+@response_handler
+def return_success(response):
+    return response.status_code in [200, 201, 204]
+
+
+@json
+class JIRAClient(Consumer):
     def __init__(self, base_url):
-        email, password = get_credentials(base_url)
+        self.auth = email, password = get_credentials(base_url)
 
         if email is not None and password is not None:
-            self.auth = (email, password)
             self.base_url = base_url
-            self.rest_base_url = urljoin(self.base_url, 'rest/api/2/')
+            rest_base_url = urljoin(base_url, 'rest/api/2/')
+            super(JIRAClient, self).__init__(
+                base_url=rest_base_url, auth=(email, password)
+            )
         else:
             print('== Authentication not configured. Run `goji login`')
             exit()
-
-    def get(self, path):
-        url = urljoin(self.rest_base_url, path)
-        return requests.get(url, auth=self.auth)
-
-    def post(self, path, json):
-        url = urljoin(self.rest_base_url, path)
-        return requests.post(url, auth=self.auth, json=json)
-
-    def put(self, path, json):
-        url = urljoin(self.rest_base_url, path)
-        return requests.put(url, auth=self.auth, json=json)
 
     @property
     def username(self):
         return self.auth[0]
 
-    def get_user(self):
-        response = self.get('myself')
-        return User.from_json(response.json())
+    @returns.json(User)
+    @get("myself")
+    def get_user(self): pass
 
-    def get_issue(self, issue_key):
-        response = self.get('issue/%s' % issue_key)
-        return Issue.from_json(response.json())
+    @returns.json(Issue)
+    @get("issue/{issue_key}")
+    def get_issue(self, issue_key): pass
 
-    def get_issue_transitions(self, issue_key):
-        response = self.get('issue/%s/transitions' % issue_key)
-        return map(Transition.from_json, response.json()['transitions'])
+    @returns.json(returns.List[Transition], member="transitions")
+    @get("issue/{issue_key}/transitions")
+    def get_issue_transitions(self, issue_key): pass
 
-    def change_status(self, issue_key, transition_id):
-        data = {'transition': {'id': transition_id}}
-        response = self.post('issue/%s/transitions' % issue_key, data)
-        return (response.status_code == 204)
+    @returns.json(returns.List[Issue], member="issues")
+    @post("search", args={"query": Field("jql")})
+    def search(self, query): pass
 
-    def edit_issue(self, issue_key, updated_fields):
-        data = {'fields': updated_fields}
-        response = self.put('issue/%s' % issue_key, data)
-        return (response.status_code == 204) or (response.status_code == 200)
+    @return_success
+    @post("issue/{issue_key}/transactions",
+          args={"transaction_id": Field(("transaction", "id"))})
+    def change_status(self, issue_key, transaction_id): pass
 
-    def assign(self, issue_key, name):
-        response = self.put('issue/%s/assignee' % issue_key, {'name': name})
-        return (response.status_code == 204) or (response.status_code == 200)
+    @return_success
+    @put("issue/{issue_key}", args={"fields": Field})
+    def edit_issue(self, issue_key, fields): pass
 
-    def comment(self, issue_key, comment):
-        response = self.post('issue/%s/comment' % issue_key, {'body': comment})
-        return (response.status_code == 201) or (response.status_code == 200)
+    @return_success
+    @put("issue/{issue_key}/assignee", args={"name": Field})
+    def assign(self, issue_key, name): pass
 
-    def search(self, query):
-        response = self.post('search', {'jql': query})
-        return map(Issue.from_json, response.json()['issues'])
+    @return_success
+    @post("issue/{issue_key}/comment", args={"comment": Field("body")})
+    def comment(self, issue_key, comment): pass
